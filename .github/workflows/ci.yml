@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 預設只給讀取權限（最小權限原則）
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # 使用 GitHub Environment「ci」裡設定的 Secrets 與 Variables
+    environment: ci
+    env:
+      APP_ENV: development
+      # 密鑰由 GitHub Secrets 注入成環境變數，不寫在程式碼或這個檔案裡
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      # 不是機密的設定放 Variables
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -v
+
+  # SCA：每次 push／PR 都用 pip-audit 比對已知漏洞，有漏洞就讓 CI 失敗
+  # Dependabot 是「每週檢查＋自動開 PR」，pip-audit 是「合併前把關」，兩者互補
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit -r requirements.txt --strict
