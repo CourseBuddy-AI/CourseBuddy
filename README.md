@@ -4,7 +4,7 @@
  
 DevSecOps 課程期末專案（Assignment 10：Hypothesis-Driven Development + Feature Toggles）。Final Demo：**2026/12/15**。
  
-- Project board：[CourseBuddy-AI Projects](https://github.com/orgs/CourseBuddy-AI/projects/1)
+- 目前專案進度 board：[CourseBuddy-AI Projects](https://github.com/orgs/CourseBuddy-AI/projects/1)
 - 詳細分工與進度：[docs/期末專案分工.md](docs/期末專案分工.md)
 ## 專案目標
  
