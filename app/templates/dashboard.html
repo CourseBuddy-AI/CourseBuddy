@@ -18,7 +18,7 @@
   <section class="card">
     <h2>上傳講義</h2>
     {# 林的 upload.py 合併後，在這裡放上傳表單（記得帶 csrf hidden 欄位） #}
-    {% block upload_form %}<p class="muted">上傳功能開發中。</p>{% endblock %}
+    {% block upload_form %}{% include "upload_form.html" ignore missing %}{% endblock %}
   </section>
 </div>
 {% endblock %}
