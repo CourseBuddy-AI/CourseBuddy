@@ -1,245 +1,166 @@
-"""PDF 上傳：副檔名、檔頭、大小、頁數，以及登入、CSRF、擁有者。"""
+"""
+由 app/__init__.py 的 OPTIONAL_MODULES 自動掛上（init_app）。
+
+上傳的檔案是不可信的輸入，依便宜到昂貴的順序檢查，前面沒過就不做後面的事：
+  1. 有沒有檔案
+  2. 副檔名是 .pdf
+  3. 大小：整個請求先被 MAX_CONTENT_LENGTH 擋（Flask 不會把超大請求讀進記憶體），
+     檔案本身再檢查一次 UPLOAD_MAX_BYTES
+  4. 檔頭是 %PDF-（副檔名可以亂改，檔頭才看得出是不是 PDF）
+  5. pypdf 解析得了、沒加密、頁數不超過 UPLOAD_MAX_PAGES（先數頁數，才逐頁擷取文字）
+  6. 擷取得到文字（掃描檔沒有文字，AI 出題用不了）
+
+PDF 檔本身不落地，只把每頁文字存進 store；所以沒有存檔路徑可以被 path traversal。
+擷取出來的文字之後會交給 LLM，一樣是不可信的資料，Prompt 要把它當資料、不是指令。
+"""
+from __future__ import annotations
+
 import io
+import re
+
+from flask import (Blueprint, current_app, flash, g, jsonify, redirect, request,
+                   url_for)
+
+from .auth import login_required
+
+bp = Blueprint("upload", __name__)
+
+DEFAULTS = {
+    "UPLOAD_MAX_BYTES": 10 * 1024 * 1024,  # 單檔 10 MB
+    "UPLOAD_MAX_PAGES": 50,                # 一份講義最多 50 頁
+    "UPLOAD_MAX_CHARS_PER_PAGE": 5000,     # 每頁文字上限，限制之後送進 LLM 的長度
+}
+FORM_OVERHEAD = 64 * 1024                  # multipart 邊界與其他欄位（csrf、title）的空間
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_SPACES = re.compile(r"[ \t\r\f\v]+")
+
+
+class UploadError(Exception):
+    def __init__(self, status: int, reason: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason      # 給 log 和 API 用的短代碼
+        self.message = message    # 給使用者看的中文訊息
+
+
+# ---------------- 檢查 ----------------
+def clean_filename(name: str) -> str:
+    """只留最後一段檔名、去掉控制字元。檔名只拿來顯示，不拿來存檔。"""
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return _CONTROL.sub("", name).strip()[:100]
+
+
+def read_upload(file_storage) -> tuple[str, bytes]:
+    if file_storage is None or not file_storage.filename:
+        raise UploadError(400, "no_file", "請選擇要上傳的 PDF 檔")
+
+    filename = clean_filename(file_storage.filename)
+    if not filename.lower().endswith(".pdf"):
+        raise UploadError(415, "bad_extension", "只接受 .pdf 檔")
+
+    limit = current_app.config["UPLOAD_MAX_BYTES"]
+    data = file_storage.stream.read(limit + 1)   # 最多讀 limit+1 bytes，夠判斷是否超過
+    if len(data) > limit:
+        raise UploadError(413, "too_large", f"檔案超過 {limit // (1024 * 1024) or 1} MB 上限")
+    if not data:
+        raise UploadError(400, "empty", "檔案是空的")
+    if not data.startswith(b"%PDF-"):
+        raise UploadError(415, "bad_magic", "檔案內容不是 PDF（檔頭不是 %PDF-）")
+    return filename, data
+
+
+def extract_pages(data: bytes) -> list[str]:
+    from pypdf import PdfReader  # 延遲匯入：沒用到上傳時不用載入
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            raise UploadError(400, "encrypted", "PDF 有密碼保護，請先移除密碼再上傳")
+        count = len(reader.pages)
+    except UploadError:
+        raise
+    except Exception:  # pypdf 對壞檔會丟各種例外，一律視為無法解析
+        raise UploadError(400, "unreadable", "PDF 檔損毀或無法解析")
+
+    max_pages = current_app.config["UPLOAD_MAX_PAGES"]
+    if count == 0:
+        raise UploadError(400, "no_pages", "PDF 沒有任何頁面")
+    if count > max_pages:
+        raise UploadError(400, "too_many_pages", f"PDF 有 {count} 頁，超過 {max_pages} 頁上限")
+
+    max_chars = current_app.config["UPLOAD_MAX_CHARS_PER_PAGE"]
+    pages = []
+    try:
+        for page in reader.pages:
+            text = _SPACES.sub(" ", page.extract_text() or "").strip()
+            pages.append(text[:max_chars])
+    except Exception:
+        raise UploadError(400, "unreadable", "PDF 檔損毀或無法解析")
+
+    if not any(pages):
+        raise UploadError(400, "no_text", "讀不到文字（可能是掃描檔），請上傳有文字層的 PDF")
+    return pages
+
+
+def handle_upload():
+    """兩個路由共用：檢查、擷取文字、存進 store，回傳新的 Material。"""
+    filename, data = read_upload(request.files.get("file"))
+    pages = extract_pages(data)
+    title = _CONTROL.sub("", request.form.get("title", "")).strip()[:100] or filename[:-4] or "未命名講義"
+    m = current_app.extensions["store"].add_material(title, g.user.id, pages, filename)
+    current_app.logger.info("upload ok uid=%s material=%s bytes=%d pages=%d",
+                            g.user.id, m.id, len(data), len(pages))
+    return m
+
+
+def _log_reject(e: UploadError) -> None:
+    current_app.logger.warning("upload rejected uid=%s reason=%s", g.user.id, e.reason)
+
 
-import pytest
-
-from app import create_app
-from tests.conftest import As
-
-
-# ---------------- 測試用 PDF ----------------
-def make_pdf(pages: list[str]) -> bytes:
-    """手寫一份最小的合法 PDF，每頁一行英文文字（Helvetica 不含中文字型）。"""
-    n = len(pages)
-    font_id = 3 + 2 * n
-    objs = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [" + b" ".join(f"{3 + 2 * i} 0 R".encode() for i in range(n))
-        + b"] /Count " + str(n).encode() + b" >>",
-    ]
-    for i, text in enumerate(pages):
-        page_id, content_id = 3 + 2 * i, 4 + 2 * i
-        stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode() if text else b""
-        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-                    f"/Resources << /Font << /F1 {font_id} 0 R >> >> "
-                    f"/Contents {content_id} 0 R >>".encode())
-        objs.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
-    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for num, body in enumerate(objs, start=1):
-        offsets.append(len(out))
-        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
-    xref = len(out)
-    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
-    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
-    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    return bytes(out)
-
-
-GOOD = make_pdf(["Week 3 supervised learning", "Overfitting and regularization"])
-
-
-def upload(user, data, filename="notes.pdf", title=None, url="/api/materials"):
-    form = {"file": (io.BytesIO(data), filename)}
-    if title is not None:
-        form["title"] = title
-    if url.startswith("/api/"):
-        return user.api_post(url, data=form, content_type="multipart/form-data")
-    return user.post(url, data=form, content_type="multipart/form-data")
-
-
-# ---------------- 登入與 CSRF ----------------
-def test_api_requires_login(client):
-    r = client.post("/api/materials", data={"file": (io.BytesIO(GOOD), "a.pdf")},
-                    content_type="multipart/form-data")
-    # 沒登入時 session 裡沒有 csrf，CSRF 檢查先擋（400）；兩者都不會進到上傳
-    assert r.status_code in (400, 401)
-
-
-def test_api_requires_login_even_with_csrf_disabled():
-    app = create_app({"TESTING": True, "SECRET_KEY": "t", "CSRF_DISABLED": True})
-    r = app.test_client().post("/api/materials", data={"file": (io.BytesIO(GOOD), "a.pdf")},
-                               content_type="multipart/form-data")
-    assert r.status_code == 401
-
-
-def test_form_redirects_to_login(app):
-    app.config["CSRF_DISABLED"] = True
-    r = app.test_client().post("/materials/upload", data={"file": (io.BytesIO(GOOD), "a.pdf")},
-                               content_type="multipart/form-data")
-    assert r.status_code == 302 and "/login" in r.headers["Location"]
-
-
-def test_csrf_required(login):
-    alice = login("alice")
-    r = alice.c.post("/api/materials", data={"file": (io.BytesIO(GOOD), "a.pdf")},
-                     content_type="multipart/form-data")
-    assert r.status_code == 400
-
-
-# ---------------- 成功 ----------------
-def test_upload_ok_and_owned_by_uploader(app, login):
-    alice = login("alice")
-    r = upload(alice, GOOD, title="AI 第 3 週")
-    assert r.status_code == 201, r.get_json()
-    body = r.get_json()
-    assert body["owner_id"] == "alice" and body["pages"] == 2
-
-    m = app.extensions["store"].materials[body["id"]]
-    assert "supervised learning" in m.pages[0]
-    assert "Overfitting" in m.pages[1]
-    assert m.title == "AI 第 3 週" and m.filename == "notes.pdf"
-
-    # 上傳後自己看得到，別人看不到（接上儀珊的 ABAC）
-    assert alice.get(f"/api/materials/{body['id']}").status_code == 200
-    assert login("bob").get(f"/api/materials/{body['id']}").status_code == 403
-
-
-def test_title_defaults_to_filename(app, login):
-    r = upload(login("alice"), GOOD, filename="AI_week5.pdf")
-    assert r.get_json()["title"] == "AI_week5"
-
-
-def test_uppercase_extension_ok(login):
-    assert upload(login("alice"), GOOD, filename="NOTES.PDF").status_code == 201
-
-
-def test_path_in_filename_is_stripped(app, login):
-    r = upload(login("alice"), GOOD, filename="../../etc/evil.pdf")
-    assert r.status_code == 201
-    assert app.extensions["store"].materials[r.get_json()["id"]].filename == "evil.pdf"
-
-
-def test_form_upload_redirects_to_material(login):
-    alice = login("alice")
-    r = upload(alice, GOOD, url="/materials/upload")
-    assert r.status_code == 302 and "/materials/" in r.headers["Location"]
-    page = alice.get(r.headers["Location"]).get_data(as_text=True)
-    assert "supervised learning" in page and "已上傳" in page
-
-
-def test_title_is_escaped_on_dashboard(login):
-    alice = login("alice")
-    upload(alice, GOOD, title="<script>alert(1)</script>")
-    html = alice.get("/").get_data(as_text=True)
-    assert "<script>alert(1)</script>" not in html
-    assert "&lt;script&gt;" in html
-
-
-def test_dashboard_shows_form(login):
-    html = login("alice").get("/").get_data(as_text=True)
-    assert 'enctype="multipart/form-data"' in html and 'name="csrf"' in html
-
-
-# ---------------- 副檔名 ----------------
-@pytest.mark.parametrize("name", ["notes.txt", "notes.pdf.exe", "notes", "notes.pdfx"])
-def test_bad_extension_rejected(login, name):
-    r = upload(login("alice"), GOOD, filename=name)
-    assert r.status_code == 415 and r.get_json()["error"] == "bad_extension"
-
-
-def test_missing_file_rejected(login):
-    alice = login("alice")
-    r = alice.api_post("/api/materials", data={}, content_type="multipart/form-data")
-    assert r.status_code == 400 and r.get_json()["error"] == "no_file"
-
-
-# ---------------- 檔頭 ----------------
-@pytest.mark.parametrize("data", [
-    b"MZ\x90\x00 this is a windows exe",          # 改副檔名的執行檔
-    b"\x89PNG\r\n\x1a\n fake",                   # 改副檔名的圖片
-    b"<html><script>alert(1)</script></html>",   # 改副檔名的 HTML
-    b" %PDF-1.4 leading space",                  # 檔頭不在最前面
-])
-def test_bad_magic_rejected(login, data):
-    r = upload(login("alice"), data)
-    assert r.status_code == 415 and r.get_json()["error"] == "bad_magic"
-
-
-def test_empty_file_rejected(login):
-    r = upload(login("alice"), b"")
-    assert r.status_code == 400 and r.get_json()["error"] == "empty"
-
-
-def test_corrupted_pdf_rejected(login):
-    r = upload(login("alice"), b"%PDF-1.4\nthis is not really a pdf\n%%EOF")
-    assert r.status_code == 400 and r.get_json()["error"] == "unreadable"
-
-
-# ---------------- 大小 ----------------
-@pytest.fixture
-def small_app():
-    return create_app({"TESTING": True, "SECRET_KEY": "t",
-                       "UPLOAD_MAX_BYTES": len(GOOD) + 10, "UPLOAD_MAX_PAGES": 3})
-
-
-def test_file_at_limit_ok(small_app):
-    assert upload(As(small_app.test_client(), "alice"), GOOD).status_code == 201
-
-
-def test_file_over_limit_rejected(small_app):
-    big = GOOD + b"\n%" + b"x" * 100       # 檔尾加註解，還是合法 PDF，只是變大
-    r = upload(As(small_app.test_client(), "alice"), big)
-    assert r.status_code == 413 and r.get_json()["error"] == "too_large"
-
-
-def test_request_over_max_content_length_rejected(small_app):
-    """整個請求超過 MAX_CONTENT_LENGTH：Flask 讀表單前就擋掉。"""
-    huge = b"%PDF-1.4\n" + b"x" * (small_app.config["MAX_CONTENT_LENGTH"] + 1)
-    r = upload(As(small_app.test_client(), "alice"), huge)
-    assert r.status_code == 413
-
-
-def test_request_too_large_on_form_shows_message(small_app):
-    alice = As(small_app.test_client(), "alice")
-    huge = b"%PDF-1.4\n" + b"x" * (small_app.config["MAX_CONTENT_LENGTH"] + 1)
-    r = upload(alice, huge, url="/materials/upload")
-    assert r.status_code == 302
-    assert "上限" in alice.get("/").get_data(as_text=True)
-
-
-# ---------------- 頁數與內容 ----------------
-def test_pages_at_limit_ok(small_app):
-    pdf = make_pdf(["p1", "p2", "p3"])
-    small_app.config["UPLOAD_MAX_BYTES"] = 10_000
-    assert upload(As(small_app.test_client(), "alice"), pdf).status_code == 201
-
-
-def test_too_many_pages_rejected(small_app):
-    pdf = make_pdf(["p1", "p2", "p3", "p4"])
-    small_app.config["UPLOAD_MAX_BYTES"] = 10_000
-    r = upload(As(small_app.test_client(), "alice"), pdf)
-    assert r.status_code == 400 and r.get_json()["error"] == "too_many_pages"
-
-
-def test_no_text_rejected(login):
-    r = upload(login("alice"), make_pdf(["", ""]))
-    assert r.status_code == 400 and r.get_json()["error"] == "no_text"
-
-
-def test_encrypted_pdf_rejected(login):
-    from pypdf import PdfReader, PdfWriter
-
-    w = PdfWriter()
-    for p in PdfReader(io.BytesIO(GOOD)).pages:
-        w.add_page(p)
-    w.encrypt(user_password="secret", algorithm="RC4-128")
-    buf = io.BytesIO()
-    w.write(buf)
-    r = upload(login("alice"), buf.getvalue())
-    assert r.status_code == 400 and r.get_json()["error"] == "encrypted"
-
-
-def test_text_per_page_is_capped(app, login):
-    app.config["UPLOAD_MAX_CHARS_PER_PAGE"] = 10
-    r = upload(login("alice"), GOOD)
-    m = app.extensions["store"].materials[r.get_json()["id"]]
-    assert all(len(p) <= 10 for p in m.pages)
-
-
-def test_rejected_upload_is_not_stored(app, login):
-    before = len(app.extensions["store"].materials)
-    upload(login("alice"), b"MZ not a pdf")
-    assert len(app.extensions["store"].materials) == before
+# ---------------- 路由 ----------------
+@bp.post("/materials/upload")
+@login_required
+def upload_form():
+    """首頁的上傳表單：成功跳到講義頁，失敗回首頁顯示原因。"""
+    try:
+        m = handle_upload()
+    except UploadError as e:
+        _log_reject(e)
+        flash(e.message)
+        return redirect(url_for("main.dashboard"))
+    flash(f"已上傳「{m.title}」，共 {len(m.pages)} 頁")
+    return redirect(url_for("main.material", mid=m.id))
+
+
+@bp.post("/api/materials")
+@login_required
+def upload_api():
+    try:
+        m = handle_upload()
+    except UploadError as e:
+        _log_reject(e)
+        return jsonify(error=e.reason, status=e.status, message=e.message), e.status
+    return jsonify(id=m.id, title=m.title, owner_id=m.owner_id, pages=len(m.pages)), 201
+
+
+def _request_too_large(e):
+    """整個請求超過 MAX_CONTENT_LENGTH，Flask 在讀表單時就丟 413，還沒進到路由。"""
+    limit = current_app.config["UPLOAD_MAX_BYTES"]
+    message = f"檔案超過 {limit // (1024 * 1024) or 1} MB 上限"
+    current_app.logger.warning("upload rejected uid=%s reason=too_large(request)",
+                               getattr(g.get("user"), "id", None))
+    if request.path.startswith("/api/"):
+        return jsonify(error="too_large", status=413, message=message), 413
+    flash(message)
+    return redirect(url_for("main.dashboard"))
+
+
+def init_app(app) -> None:
+    for key, value in DEFAULTS.items():
+        app.config.setdefault(key, value)
+    # Flask 預設 MAX_CONTENT_LENGTH 是 None（不限制），所以不能用 setdefault
+    if app.config.get("MAX_CONTENT_LENGTH") is None:
+        app.config["MAX_CONTENT_LENGTH"] = app.config["UPLOAD_MAX_BYTES"] + FORM_OVERHEAD
+    app.register_blueprint(bp)
+    app.register_error_handler(413, _request_too_large)
