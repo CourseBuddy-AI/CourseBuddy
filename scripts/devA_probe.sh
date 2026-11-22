@@ -51,7 +51,24 @@ T=$(token "$TMP/alice" /)
 curl -s -o /dev/null -b "$TMP/alice" -c "$TMP/alice" -X POST "$B/logout" -d "csrf=$T"
 code "攻擊者拿登出前複製的 cookie GET /api/me" -b "$TMP/stolen" "$B/api/me"
 
-echo; echo "== 6. 非 admin 改 flag（賴的 flag 控制台合併後才有，期望 403）"
+echo; echo "== 6. 非 admin 改 flag（賴的 flag 控制台，期望 403）"
 login betty
 T=$(token "$TMP/betty" /)
 code "betty(beta_tester) POST /admin/flags/ai_quiz" -b "$TMP/betty" -X POST "$B/admin/flags/ai_quiz" -d enabled=false -d "csrf=$T"
+code "betty(beta_tester) GET /admin/flags（控制台）" -b "$TMP/betty" "$B/admin/flags"
+code "admin GET /admin/flags（控制台）" -b "$TMP/admin" "$B/admin/flags"
+
+echo; echo "== 7. flag 狀態由伺服器決定（flags.json 預設全部 OFF）"
+printf '  betty /api/flags → %s\n' "$(curl -s -b "$TMP/betty" "$B/api/flags" | tr -d ' \n')"
+printf '  admin /api/flags → %s\n' "$(curl -s -b "$TMP/admin" "$B/api/flags" | tr -d ' \n')"
+code "未登入 GET /api/flags" "$B/api/flags"
+
+# == 8. flag OFF 直接打功能 API、看別人的錯題（Juinn 的 features.py 合併後才有）
+# 用法：AI_API=/api/questions/1/explanation REMINDER_API=/api/... OTHERS_ATTEMPT_API=/api/... bash scripts/devA_probe.sh
+if [ -n "${AI_API:-}${REMINDER_API:-}${OTHERS_ATTEMPT_API:-}" ]; then
+  echo; echo "== 8. 功能 API（期望 flag OFF → 403、別人的錯題 → 403）"
+  T=$(token "$TMP/betty" /)
+  [ -n "${AI_API:-}" ] && code "betty POST $AI_API（ai_quiz OFF）" -b "$TMP/betty" -X POST "$B$AI_API" -H "X-CSRF-Token: $T"
+  [ -n "${REMINDER_API:-}" ] && code "betty POST $REMINDER_API（spaced_reminder OFF）" -b "$TMP/betty" -X POST "$B$REMINDER_API" -H "X-CSRF-Token: $T"
+  [ -n "${OTHERS_ATTEMPT_API:-}" ] && code "betty GET $OTHERS_ATTEMPT_API（別人的錯題）" -b "$TMP/betty" "$B$OTHERS_ATTEMPT_API"
+fi
