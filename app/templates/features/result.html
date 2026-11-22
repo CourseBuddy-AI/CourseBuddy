@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}作答結果{% endblock %}
+{% block content %}
+<section class="card">
+  <p><a href="{{ url_for('features.quiz_page', qid=quiz.id) }}">← 回到題目</a></p>
+  <p><strong>{{ qi + 1 }}.</strong> {{ q.question }}</p>
+  {% if result.correct %}
+    <h2>答對了！</h2>
+    {% if result.review_completed %}<p class="muted">這題的複習完成了一次。</p>{% endif %}
+  {% else %}
+    <h2>答錯了</h2>
+    <p>你的答案：{{ result.chosen }}</p>
+    {# OFF：答錯只顯示正確答案 #}
+    <p class="answer-only">正確答案：<strong>{{ result.answer }}</strong></p>
+    {% if expl and flag_on("ai_quiz") %}
+    <section data-flag="ai_quiz" class="explanation">
+      <h3>AI 解析</h3>
+      <p>{{ expl.explanation }}</p>
+      {% if expl.page %}
+      <p><a href="{{ url_for('main.material', mid=expl.material_id) }}#page-{{ expl.page }}">出自講義第 {{ expl.page }} 頁</a></p>
+      {% endif %}
+      <form method="post" action="{{ url_for('features.report_page', qid=quiz.id, qi=qi) }}" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="link small">回報解析錯誤</button>
+      </form>
+    </section>
+    {% endif %}
+    <p class="muted small">這題已加入<a href="{{ url_for('features.wrong_book') }}">錯題本</a>。</p>
+  {% endif %}
+  <a class="btn" href="{{ url_for('features.quiz_page', qid=quiz.id, q=qi) }}">再做一次</a>
+  {% if qi + 1 < quiz.questions|length %}
+  <a class="btn primary" href="{{ url_for('features.quiz_page', qid=quiz.id, q=qi + 1) }}">下一題</a>
+  {% endif %}
+</section>
+{% include "features/reminder_card.html" with context %}
+{% endblock %}
