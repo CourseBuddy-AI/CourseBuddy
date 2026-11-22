@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}練習題{% endblock %}
+{% block content %}
+<section class="card">
+  {% if material %}<p><a href="{{ url_for('main.material', mid=material.id) }}">← {{ material.title }}</a></p>{% endif %}
+  <h1>練習題</h1>
+  <p class="muted small">{{ '由 AI 出題' if quiz.source == 'llm' else '規則式題目（尚未設定 LLM）' }} · 共 {{ quiz.questions|length }} 題
+    {% if items|length < quiz.questions|length %} · <a href="{{ url_for('features.quiz_page', qid=quiz.id) }}">看全部題目</a>{% endif %}</p>
+  {% for i, q in items %}
+  <form method="post" action="{{ url_for('features.answer_page', qid=quiz.id, qi=i) }}" class="question" id="q-{{ i }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <p><strong>{{ i + 1 }}.</strong> {{ q.question }}</p>
+    {% for o in q.options %}
+    <label class="option"><input type="radio" name="choice" value="{{ o }}" required> {{ o }}</label><br>
+    {% endfor %}
+    <button class="btn small">送出</button>
+  </form>
+  <hr>
+  {% endfor %}
+</section>
+{% include "features/reminder_card.html" with context %}
+{% endblock %}
