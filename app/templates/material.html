@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ m.title }}{% endblock %}
+{% block content %}
+<section class="card">
+  <p><a href="{{ url_for('main.dashboard') }}">← 我的講義</a></p>
+  <h1>{{ m.title }}</h1>
+  {% if m.filename %}<p class="muted small">來源檔案：{{ m.filename }}</p>{% endif %}
+  <ol class="pages">
+  {% for p in m.pages %}
+    <li><span class="pageno">第 {{ loop.index }} 頁</span>{{ p }}</li>
+  {% endfor %}
+  </ol>
+</section>
+
+{# ↓ 張：兩個功能的 ON / OFF 區塊放這裡（作答、ai_quiz 解析、spaced_reminder 提醒）。
+     畫面上藏起來只是 UX，伺服器端還有 feature_required 擋 API。 #}
+{% block features %}{% endblock %}
+{% endblock %}

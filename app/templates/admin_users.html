@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}角色管理{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>角色管理</h1>
+  <p class="muted">只有 admin 能進來（伺服器端 role_required("admin")）。只有 beta_tester 會被分流到實驗組。</p>
+  <table class="table">
+    <thead><tr><th>帳號</th><th>Email</th><th>目前角色</th><th>改成</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.name }} <span class="muted small">{{ u.id }}</span></td>
+        <td>{{ u.email }}</td>
+        <td><em class="role role-{{ u.role }}">{{ u.role }}</em></td>
+        <td>
+          <form method="post" action="{{ url_for('main.admin_set_role', uid=u.id) }}" class="inline">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <select name="role">
+              {% for r in roles %}<option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r }}</option>{% endfor %}
+            </select>
+            <button class="btn small">更新</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
