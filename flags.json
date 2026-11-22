@@ -1,0 +1,18 @@
+{
+  "ai_quiz": {
+    "description": "答錯後顯示 AI 解析＋「出自講義第 X 頁」，可回報解析錯誤",
+    "enabled": false,
+    "rollout": 0,
+    "allow": [],
+    "owner": "Cindy5180",
+    "expires": "2026-12-31"
+  },
+  "spaced_reminder": {
+    "description": "答錯的題在第 1、3、7 天提醒回來重做",
+    "enabled": false,
+    "rollout": 0,
+    "allow": [],
+    "owner": "Cindy5180",
+    "expires": "2026-12-31"
+  }
+}

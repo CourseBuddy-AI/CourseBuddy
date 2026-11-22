@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Flag 控制台{% endblock %}
+{% block admin_nav %}<a href="{{ url_for('flags.console') }}">Flag 控制台</a>{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='flags.css') }}">
+<section class="card">
+  <div class="fc-head">
+    <div>
+      <h1>Flag 控制台</h1>
+      <p class="muted small">只有 admin 能進來（伺服器端 role_required("admin")）。只有 beta_tester 會被分流；
+        存檔即寫入 <code>flags.json</code>，下一個請求生效，不用重啟。</p>
+      <p class="muted small">設定檔：<code>{{ fs.path.name }}</code> · 已載入 {{ fs.reloads }} 次
+        {% if fs.last_error %}<span class="fc-bad">· 最近一次讀檔失敗，沿用上一份設定：{{ fs.last_error }}</span>{% endif %}</p>
+    </div>
+    <form method="post" action="{{ url_for('flags.kill_all') }}" class="fc-killall">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="text" name="reason" placeholder="原因（例如：錯誤率暴增）" required>
+      <button class="btn fc-danger" id="kill-all">一鍵全關（Kill switch）</button>
+    </form>
+  </div>
+</section>
+
+<div class="fc-grid">
+{% for name, f in flags.items() %}
+  <section class="card fc-flag" id="flag-{{ name }}">
+    <div class="fc-title">
+      <h2><code>{{ name }}</code></h2>
+      {% if f.enabled %}<span class="fc-state on">ON · {{ f.rollout }}%</span>
+      {% else %}<span class="fc-state off">OFF</span>{% endif %}
+    </div>
+    <p class="muted small">{{ f.description }}</p>
+    <dl class="fc-meta">
+      <dt>負責人</dt><dd>{{ f.owner }}</dd>
+      <dt>到期日</dt><dd>{{ f.expires }}
+        {% if f.expired %}<span class="fc-bad">已過期，請移除 flag</span>
+        {% elif f.days_left <= 14 %}<span class="fc-warn">剩 {{ f.days_left }} 天</span>{% endif %}</dd>
+      <dt>內部名單</dt><dd>{{ f.allow|join(", ") or "—" }}</dd>
+      <dt>最後修改</dt><dd>{{ f.extra.get("updated_by", "—") }} {{ f.extra.get("updated_at", "") }}</dd>
+    </dl>
+    <form method="post" action="{{ url_for('flags.update_flag', name=name) }}" class="fc-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <label>狀態
+        <select name="enabled">
+          <option value="true" {% if f.enabled %}selected{% endif %}>enabled = true</option>
+          <option value="false" {% if not f.enabled %}selected{% endif %}>enabled = false</option>
+        </select>
+      </label>
+      <label>Rollout（%）
+        <input type="number" name="rollout" min="0" max="100" value="{{ f.rollout }}" required>
+      </label>
+      <label class="fc-wide">原因
+        <input type="text" name="reason" placeholder="例如：進入 50% 實驗">
+      </label>
+      <button class="btn primary">儲存</button>
+    </form>
+    <form method="post" action="{{ url_for('flags.kill_flag', name=name) }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="reason" value="manual kill from console">
+      <button class="btn small fc-danger" {% if not f.enabled %}disabled{% endif %}>只關這個 flag</button>
+    </form>
+
+    {% set s = summary.get(name) %}
+    {% if s %}
+    <h3>監控（ON / OFF 分開看）</h3>
+    <table class="table fc-metrics">
+      <thead><tr><th>指標</th><th>ON（實驗組）</th><th>OFF（對照組）</th><th class="muted">不在實驗</th></tr></thead>
+      <tbody>
+      {% for ev in s.on.events %}
+        <tr><td><code>{{ ev }}</code></td>
+          {% for v in ("on", "off", "excluded") %}<td>{{ s[v].events[ev] }}</td>{% endfor %}</tr>
+      {% endfor %}
+        <tr><td>錯誤率</td>{% for v in ("on", "off", "excluded") %}<td>{{ "%.1f%%"|format(s[v].error_rate * 100) if s[v].error_rate is not none else "—" }}</td>{% endfor %}</tr>
+        <tr><td>延遲 p50 / p95（ms）</td>{% for v in ("on", "off", "excluded") %}<td>{{ s[v].latency_ms_p50 or "—" }} / {{ s[v].latency_ms_p95 or "—" }}</td>{% endfor %}</tr>
+        <tr><td>LLM 今日成本（USD）</td>{% for v in ("on", "off", "excluded") %}<td>{{ "%.4f"|format(s[v].llm_cost_usd_today) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+    {% if name == "ai_quiz" %}
+    <p class="muted small">LLM 每日預算 ${{ "%.2f"|format(config.LLM_DAILY_BUDGET_USD) }}，今日已用 ${{ "%.4f"|format(m.cost_today(name)) }}；超過自動關閉。</p>
+    {% endif %}
+    {% endif %}
+  </section>
+{% endfor %}
+</div>
+
+<section class="card">
+  <h2>變更紀錄</h2>
+  <p class="muted small">自動 kill switch：ON 組最近 {{ config.KILL_WINDOW }} 個請求錯誤率 ≥ {{ (config.KILL_ERROR_RATE * 100)|round|int }}%
+    （至少 {{ config.KILL_MIN_REQUESTS }} 個），或 ai_quiz 當日 LLM 成本超過預算。</p>
+  <table class="table">
+    <thead><tr><th>時間（UTC）</th><th>誰</th><th>Flag</th><th>前 → 後</th><th>原因</th></tr></thead>
+    <tbody>
+    {% for a in fs.audit %}
+      <tr><td>{{ a.at }}</td><td>{{ a.actor }}</td><td><code>{{ a.flag }}</code></td>
+        <td>{{ a.before.enabled }}/{{ a.before.rollout }}% → {{ a.after.enabled }}/{{ a.after.rollout }}%</td>
+        <td>{{ a.reason }}</td></tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">這次啟動後還沒有變更</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,23 @@
+/* Flag 控制台（賴）。CSP 不允許 inline style，所以獨立一個檔案。 */
+.fc-head { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+.fc-head h1 { margin-top:0; }
+.fc-killall { display:flex; gap:8px; align-items:center; }
+.fc-killall input, .fc-form input, .fc-form select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+.fc-danger { background:#b91c1c; color:#fff; border-color:#b91c1c; }
+.fc-danger[disabled] { opacity:.4; cursor:not-allowed; }
+.fc-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:20px; }
+.fc-title { display:flex; justify-content:space-between; align-items:center; }
+.fc-title h2 { margin:0; }
+.fc-state { font-weight:700; font-size:13px; padding:4px 12px; border-radius:999px; }
+.fc-state.on { background:#dcfce7; color:#166534; }
+.fc-state.off { background:#f3f4f6; color:#6b7280; }
+.fc-meta { display:grid; grid-template-columns:90px 1fr; gap:4px 12px; font-size:14px; }
+.fc-meta dt { color:var(--muted); }
+.fc-meta dd { margin:0; }
+.fc-form { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:14px 0 8px; align-items:end; }
+.fc-form label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+.fc-form .fc-wide { grid-column:1 / -1; }
+.fc-metrics td, .fc-metrics th { font-size:13px; padding:5px 8px; }
+.fc-bad { color:#b91c1c; font-weight:600; margin-left:6px; }
+.fc-warn { color:#b45309; margin-left:6px; }
+h3 { font-size:15px; margin:18px 0 6px; }
