@@ -1,0 +1,24 @@
+{# 講義頁下方的作答區（Juinn）。由 material.html 的 features block include。
+   核心功能一直顯示；兩個實驗功能的區塊只在 ON 時出現（data-flag 給賴的 TC1 檢查）。 #}
+<section class="card">
+  <h2>練習題</h2>
+  <form method="post" action="{{ url_for('features.new_quiz', mid=m.id) }}" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button class="btn primary">用這份講義出題</button>
+  </form>
+  <a class="btn" href="{{ url_for('features.wrong_book') }}">錯題本</a>
+  {% set qs = quizzes_for(m) %}
+  {% if qs %}
+  <ul class="materials">
+    {% for q in qs|reverse %}
+    <li><a href="{{ url_for('features.quiz_page', qid=q.id) }}">第 {{ loop.revindex }} 次出題（{{ q.questions|length }} 題）</a>
+        <span class="tag gray">{{ q.created_on }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if flag_on("ai_quiz") %}
+  <p class="muted small" data-flag="ai_quiz">答錯時會顯示 AI 解析，並標出出自講義第幾頁。</p>
+  {% endif %}
+</section>
+{% set card = reminder_card() %}
+{% include "features/reminder_card.html" with context %}

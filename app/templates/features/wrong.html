@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}錯題本{% endblock %}
+{% block content %}
+{% include "features/reminder_card.html" with context %}
+<section class="card">
+  <h1>錯題本</h1>
+  <ul class="materials">
+  {% for w, quiz, q in items %}
+    <li>
+      <span>{{ q.question }}</span>
+      <span>
+        {% if flag_on("spaced_reminder") %}<span class="tag gray" data-flag="spaced_reminder">下次複習 {{ w.next_due() }}</span>{% endif %}
+        <a class="btn small" href="{{ url_for('features.quiz_page', qid=quiz.id, q=w.qi) }}">重做</a>
+      </span>
+    </li>
+  {% else %}
+    <li class="muted">目前沒有錯題。</li>
+  {% endfor %}
+  </ul>
+</section>
+{% endblock %}
