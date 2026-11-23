@@ -1,22 +1,42 @@
-{# spaced_reminder ON 才會出現（card = features.reminder_card()，不在實驗組時是 None）。張可以整塊改成正式設計。 #}
+{# 複習提醒卡片（Designer：張）。spaced_reminder ON 才會出現（card = features.reminder_card()，不在實驗組時是 None）。
+   OFF 的人完全看不到這張卡片，錯題只留在錯題本。 #}
 {% if card and flag_on("spaced_reminder") %}
-<section class="card" data-flag="spaced_reminder">
-  {% if card.count %}
-    <h2>你有 {{ card.count }} 題該複習了</h2>
-    <ul class="materials">
-    {% for w in card.due %}
-      <li><a href="{{ url_for('features.review_click', qid=w.quiz_id, qi=w.qi) }}">第 {{ w.stage + 1 }} 次複習：重做這題</a>
-          <span class="tag gray">{{ w.next_due() }} 到期</span></li>
+<section class="card reminder{{ ' is-off' if card.off }}" data-flag="spaced_reminder">
+  {% if card.off %}
+    <div class="reminder-head">
+      <h2>複習提醒已關閉</h2>
+    </div>
+    <p class="muted small">錯題還在錯題本裡，想複習時可以自己回去做。</p>
+  {% elif card.count %}
+    <div class="reminder-head">
+      <h2>你有 {{ card.count }} 題該複習了</h2>
+      <span class="muted small">答錯後第 {{ review_offsets|join('、') }} 天各複習一次</span>
+    </div>
+    <ul class="due-list">
+    {% for w, question in card.rows %}
+      <li>
+        <div class="due-main">
+          <span class="due-q">{{ question }}</span>
+          <span class="stages" aria-label="第 {{ w.stage + 1 }} 次複習，共 {{ review_offsets|length }} 次">
+          {% for d in review_offsets %}
+            <span class="stage{{ ' done' if loop.index0 < w.stage }}{{ ' now' if loop.index0 == w.stage }}">第 {{ d }} 天</span>
+          {% endfor %}
+          </span>
+        </div>
+        <a class="btn small primary" href="{{ url_for('features.review_click', qid=w.quiz_id, qi=w.qi) }}">第 {{ w.stage + 1 }} 次複習：重做這題</a>
+      </li>
     {% endfor %}
     </ul>
   {% else %}
-    <h2>複習提醒</h2>
-    <p class="muted">目前沒有該複習的題目。答錯的題會在第 {{ review_offsets|join('、') }} 天提醒你回來重做。</p>
-    {% if card.upcoming %}<p class="muted small">下一次複習：{{ card.upcoming[0].next_due() }}</p>{% endif %}
+    <div class="reminder-head">
+      <h2>複習提醒</h2>
+    </div>
+    <p class="muted small">目前沒有該複習的題目。答錯的題會在第 {{ review_offsets|join('、') }} 天提醒你回來重做。</p>
+    {% if card.upcoming %}<p class="muted small">下一次複習：{{ card.upcoming[0].next_due() }}（{{ card.upcoming|length }} 題）</p>{% endif %}
   {% endif %}
-  <form method="post" action="{{ url_for('features.reminders_on' if card.off else 'features.reminders_off') }}" class="inline">
+  <form method="post" action="{{ url_for('features.reminders_on' if card.off else 'features.reminders_off') }}" class="reminder-toggle">
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-    <button class="link small">{{ '重新開啟提醒' if card.off else '關閉提醒' }}</button>
+    <button class="link small{{ '' if card.off else ' muted' }}">{{ '重新開啟提醒' if card.off else '關閉提醒' }}</button>
   </form>
 </section>
 {% endif %}

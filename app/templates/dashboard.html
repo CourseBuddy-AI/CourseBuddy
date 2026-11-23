@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}我的講義{% endblock %}
 {% block content %}
+{# spaced_reminder ON：首頁最上面放複習卡片（Designer：張）；OFF 時 reminder_card() 是 None，什麼都不顯示 #}
+{% set card = reminder_card() %}
+{% include "features/reminder_card.html" with context %}
 <div class="grid">
   <section class="card">
     <h1>我的講義</h1>

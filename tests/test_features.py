@@ -516,3 +516,36 @@ def test_llm_key_comes_from_environment(flags_file, monkeypatch):
     assert a.config["LLM_API_KEY"] == "from-env"
     b = create_app({"TESTING": True, "SECRET_KEY": "x", "FLAGS_FILE": str(flags_file), "LLM_API_KEY": ""})
     assert b.config["LLM_API_KEY"] == ""                                        # 測試明確關掉時不讀環境變數
+
+
+# ---------------- 首頁複習卡片（Designer：張） ----------------
+def test_dashboard_reminder_card_on_shows_question_and_stage(app, flags_file, as_):
+    both_on(flags_file)
+    betty = as_("betty")
+    qid = make_wrong(app, betty)
+    go_to(app, DAY0 + timedelta(days=1))
+    html = betty.get("/").get_data(as_text=True)
+    assert 'data-flag="spaced_reminder"' in html and "你有 1 題該複習了" in html
+    with app.app_context():
+        question = fstore(app).quizzes[qid].questions[0]["question"]
+    assert question in html                                                     # 卡片直接顯示題目
+    assert 'class="stage now">第 1 天' in html                                   # 目前在第 1 天那一關
+    assert f"/review/{qid}/0" in html
+
+
+def test_dashboard_reminder_card_off_shows_nothing(app, as_):
+    betty = as_("betty")                                                        # flag OFF
+    make_wrong(app, betty)
+    go_to(app, DAY0 + timedelta(days=1))
+    html = betty.get("/").get_data(as_text=True)
+    assert "data-flag=" not in html and "該複習了" not in html
+
+
+def test_reminder_card_after_opt_out_says_closed(app, flags_file, as_):
+    both_on(flags_file)
+    betty = as_("betty")
+    make_wrong(app, betty)
+    go_to(app, DAY0 + timedelta(days=1))
+    betty.post("/reminders/off")
+    html = betty.get("/").get_data(as_text=True)
+    assert "複習提醒已關閉" in html and "重新開啟提醒" in html and "該複習了" not in html
