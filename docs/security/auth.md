@@ -4,7 +4,7 @@
 
 | 決策 | 選擇 | 理由 | 現況 |
 | --- | --- | --- | --- |
-| 登入方式 | Google OAuth 2.0 Authorization Code + OIDC（Authlib） | 學生都有學校 Google 帳號，不用自己存密碼；Authlib 會驗 state、nonce 與 id_token 簽章 | 程式與測試完成；等 `GOOGLE_CLIENT_ID/SECRET` 放進 Secrets 後實測。開發環境用示範登入，`APP_ENV=production` 時關閉 |
+| 登入方式 | Google OAuth 2.0 Authorization Code + OIDC（Authlib） | 學生都有學校 Google 帳號，不用註冊、我們不存密碼；Authlib 會驗 state、nonce 與 id_token 簽章。**不選 passkeys**：要自己保存公鑰、處理裝置遺失後的帳號復原，而且每位學生都得先註冊裝置，期末前做不完，也沒有比學校帳號更好的使用體驗 | 完成；11/22 申請 OAuth client（測試中，只限測試使用者）並在本機實測登入成功。Client Secret 待放進 GitHub Secrets。開發環境用示範登入，`APP_ENV=production` 時關閉 |
 | Session | Flask 簽章 cookie（HttpOnly、SameSite=Lax、正式環境 Secure、8 小時過期） | 不需要額外的 Redis 或資料庫；cookie 只存 `uid`，角色每次請求從伺服器讀，改角色立即生效 | 完成；用 `session_epoch` 補上「登出後舊 cookie 仍有效」的缺點 |
 | 角色與屬性 | RBAC：`student`、`beta_tester`、`admin`；ABAC：講義 `owner_id == user.id` 才能讀寫 | 角色決定能用哪些功能（只有 beta_tester 會被分流）；資源擁有者決定能看哪份資料（防 IDOR）。admin 也不能讀學生講義（最小權限） | 完成 |
 | 錯誤回應碼 | 未登入 401（頁面導向登入）；角色或擁有者不符 403；flag OFF 打 API 403（組內決定）；資源不存在 404 | 403 讓前端與測試容易判斷「被擋」，和 401 分清楚 | 完成；flag OFF 由賴的 `feature_required` 實作 |
@@ -37,6 +37,8 @@
 python run.py                  # 終端機 1
 bash scripts/devA_probe.sh     # 終端機 2
 ```
+
+9 組情境：未登入 401、IDOR 看別人講義 403、學生自升 admin 403、缺 CSRF token 400、登出後舊 cookie 401、非 admin 改 flag 403、`/api/flags` 狀態、flag OFF 打 AI 解析／提醒 API 403、看或改別人的題目與錯題 403。
 
 ## 環境變數（新增，非機密）
 
