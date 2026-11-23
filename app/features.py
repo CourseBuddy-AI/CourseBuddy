@@ -264,6 +264,8 @@ def reminder_card() -> dict | None:
         return None
     due = fs().due_of(user.id, today())
     return {"due": due, "count": len(due), "off": user.id in fs().reminders_off,
+            # 卡片上直接顯示題目，學生不用點進去才知道是哪一題（張）
+            "rows": [(w, fs().quizzes[w.quiz_id].questions[w.qi]["question"]) for w in due],
             "upcoming": sorted((w for w in fs().wrong_of(user.id) if not w.is_due(today())),
                                key=lambda w: w.next_due())}
 
