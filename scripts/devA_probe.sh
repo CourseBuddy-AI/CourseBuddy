@@ -63,12 +63,18 @@ printf '  betty /api/flags → %s\n' "$(curl -s -b "$TMP/betty" "$B/api/flags" |
 printf '  admin /api/flags → %s\n' "$(curl -s -b "$TMP/admin" "$B/api/flags" | tr -d ' \n')"
 code "未登入 GET /api/flags" "$B/api/flags"
 
-# == 8. flag OFF 直接打功能 API、看別人的錯題（Juinn 的 features.py 合併後才有）
-# 用法：AI_API=/api/questions/1/explanation REMINDER_API=/api/... OTHERS_ATTEMPT_API=/api/... bash scripts/devA_probe.sh
-if [ -n "${AI_API:-}${REMINDER_API:-}${OTHERS_ATTEMPT_API:-}" ]; then
-  echo; echo "== 8. 功能 API（期望 flag OFF → 403、別人的錯題 → 403）"
-  T=$(token "$TMP/betty" /)
-  [ -n "${AI_API:-}" ] && code "betty POST $AI_API（ai_quiz OFF）" -b "$TMP/betty" -X POST "$B$AI_API" -H "X-CSRF-Token: $T"
-  [ -n "${REMINDER_API:-}" ] && code "betty POST $REMINDER_API（spaced_reminder OFF）" -b "$TMP/betty" -X POST "$B$REMINDER_API" -H "X-CSRF-Token: $T"
-  [ -n "${OTHERS_ATTEMPT_API:-}" ] && code "betty GET $OTHERS_ATTEMPT_API（別人的錯題）" -b "$TMP/betty" "$B$OTHERS_ATTEMPT_API"
-fi
+echo; echo "== 8. flag OFF 時直接打功能 API（Juinn 的 features.py，期望 403）"
+T=$(token "$TMP/betty" /)
+Q=$(curl -s -b "$TMP/betty" -X POST "$B/api/materials/3/quiz" -H "X-CSRF-Token: $T" | tr -d ' \n' | sed -n 's/.*"id":\([0-9]*\),"material_id".*/\1/p')
+echo "  betty 對自己的講義 3 出題 → quiz $Q"
+code "betty GET /api/quizzes/$Q/q/0/explanation（ai_quiz OFF）" -b "$TMP/betty" "$B/api/quizzes/$Q/q/0/explanation"
+code "betty POST /api/quizzes/$Q/q/0/report（ai_quiz OFF）" -b "$TMP/betty" -X POST "$B/api/quizzes/$Q/q/0/report" -H "X-CSRF-Token: $T"
+code "betty GET /api/reminders（spaced_reminder OFF）" -b "$TMP/betty" "$B/api/reminders"
+
+echo; echo "== 9. IDOR：看或改別人的題目與作答紀錄（期望 403）"
+login alice
+TA=$(token "$TMP/alice" /)
+code "alice GET /api/quizzes/$Q（betty 的題目）" -b "$TMP/alice" "$B/api/quizzes/$Q"
+code "alice POST /api/quizzes/$Q/q/0/answer（替 betty 作答）" -b "$TMP/alice" -X POST "$B/api/quizzes/$Q/q/0/answer" -H "X-CSRF-Token: $TA" -H "Content-Type: application/json" -d '{"choice":"x"}'
+code "alice POST /api/materials/3/quiz（拿 betty 的講義出題）" -b "$TMP/alice" -X POST "$B/api/materials/3/quiz" -H "X-CSRF-Token: $TA"
+printf '  alice /api/wrong（錯題本只回自己的）→ %s\n' "$(curl -s -b "$TMP/alice" "$B/api/wrong" | tr -d ' \n')"
