@@ -5,7 +5,7 @@
 DevSecOps 課程期末專案（Assignment 10：Hypothesis-Driven Development + Feature Toggles）。Final Demo：**2026/12/15**。
  
 - 目前專案進度 board：[CourseBuddy-AI Projects](https://github.com/orgs/CourseBuddy-AI/projects/1)
-- 詳細分工與進度：[docs/期末專案分工.md](docs/期末專案分工.md)
+- 詳細分工與進度：[docs/期末專案分工.md](docs/期末專案分工.md)（本週 A11：PR 與 Review 分工、審查順序都在這份文件最上面）
 ## 專案目標
  
 CourseBuddy 讓修 AI 課的學生上傳講義 PDF，自動產生練習題，並依遺忘曲線提醒回來複習錯題。
@@ -62,6 +62,7 @@ CourseBuddy 讓修 AI 課的學生上傳講義 PDF，自動產生練習題，並
 | `auth.py` | 登入、session、`g.user`、`login_required`、`role_required`、`can_view_material`、CSRF | 陳儀珊 |
 | `flags.json`、`flags.py`、`metrics.py` | `is_on`、`feature_required`、事件紀錄、Admin flag 控制台 | 賴 |
 | `features.py` | 作答與對錯紀錄、AI 解析＋頁碼、第 1/3/7 天提醒 | Juinn |
+| `analysis.py` | H1/H2 實驗結果判定（對照門檻與護欄）、`/admin/experiment/report.json`、`experiment-report` 指令 | Juinn |
 | 上傳路由 | PDF 上傳檢查 | 林 |
 | `templates/`、`style.css` | 畫面與兩個功能的 ON/OFF 區塊 | 陳儀珊、張 |
 | `tests/` | pytest（權限、上傳、flags、TC1–TC7） | 各負責人 |
@@ -78,7 +79,16 @@ cp .env.example .env             # 填入 SECRET_KEY 等值，.env 不要 commit
 python -m pytest -v
 ```
  
-App 骨架合併後可用 `python run.py` 啟動。
+啟動：`python run.py`。
+
+看 H1/H2 目前的判定結果（成立／不成立／護欄沒過／樣本不足）：
+
+```bash
+flask --app run experiment-report            # H1 用 7 天回訪率
+flask --app run experiment-report --days 3   # demo 前看 3 天的先行指標
+```
+
+admin 登入後也可以看 `/admin/experiment/report.json`（加 `?days=3` 同上）。
  
 ### 環境變數
  
@@ -104,8 +114,17 @@ App 骨架合併後可用 `python run.py` 啟動。
  
 1. 每件工作對應一張 issue，放在 Project board 上。
 2. 從 `main` 開分支，只改自己負責的檔案。
-3. 開 PR，請另一位組員審核；CI（`test`、`sca`）全部通過才合併。
-4. 共用介面（`g.user`、`login_required`、`role_required`、`can_view_material`、`is_on`、`feature_required`）的名稱不要自行更改。
+3. 開 PR：照 PR 模板填寫（做了什麼、`Closes #issue`、怎麼測的、需要特別看的地方），並指定一位組員審核。
+4. 審核者在 **1 個工作天內**回覆，留具體意見（Blocking／Suggestion／Question），不要只寫 LGTM。
+5. 作者回覆意見、推修正；有 approve、CI（`test`、`sca`）通過、討論都 resolved 才合併。
+6. 共用介面（`g.user`、`login_required`、`role_required`、`can_view_material`、`is_on`、`feature_required`）的名稱不要自行更改。
+
+`main` 有 ruleset（`protect-main`）保護，以下由 GitHub 強制執行：
+
+- 不能直接 push 到 `main`，一律走 PR；不能 force push、不能刪除 `main`
+- 至少 1 個 approve；有新的 push 時舊的 approve 會失效，推修正後要請審核者再按一次
+- 必須通過 `test`、`sca` 兩個檢查
+- 所有 review 討論都要 resolved
 ## 時程
  
 | 時間 | 目標 |
@@ -113,6 +132,10 @@ App 骨架合併後可用 `python run.py` 啟動。
 | 11/22 | CI、Dependabot 合併；App 骨架與登入權限合併 |
 | 11/23 | Flag 系統、兩個實驗功能、上傳檢查、ON/OFF 畫面合併；全員截圖 |
 | 11/24 | 繳交 A10 個人報告 |
+| 11/25 | A11：設定 `main` ruleset、開 issue #18–#22 |
+| 11/28 | A11：每人至少開 1 個 PR 並指定審核者 |
+| 11/30 | A11：回覆 review、修正、合併 |
+| 12/1 | 繳交 A11 個人報告 |
 | 11/25–12/8 | Google 登入、LLM 實測、合併 Dependabot PR、補齊指標與測試 |
 | 12/9–12/12 | 小規模 rollout，收集 H1、H2 指標 |
 | 12/15 | Final Demo |
