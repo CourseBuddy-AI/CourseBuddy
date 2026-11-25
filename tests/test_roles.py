@@ -4,7 +4,9 @@
 2. 角色不對 → 403（student、beta_tester 打所有 /admin/* 路由）
 3. 第一次 Google 登入的角色：ADMIN_EMAILS → admin、BETA_TESTER_EMAILS → beta_tester、其他 → student
 """
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,30 @@ BETA_EMAIL = "b11233030@mail.ntust.edu.tw"
 
 # 不需要登入的 API（目前沒有）。要新增公開 API 時，加到這裡並在 PR 說明理由。
 PUBLIC_API: set[str] = set()
+
+
+REPO_FLAGS = Path(__file__).resolve().parent.parent / "flags.json"
+
+
+@pytest.fixture
+def flags_file(tmp_path):
+    """flags.json 的暫存複本：就算權限檢查壞掉、請求被放行，也不會改到 repo 裡的 flags.json。
+
+    兩個 flag 都先打開，這樣「被擋下的 kill 請求沒有副作用」才檢查得出來。
+    """
+    data = json.loads(REPO_FLAGS.read_text(encoding="utf-8"))
+    for name in ("ai_quiz", "spaced_reminder"):
+        data[name].update(enabled=True, rollout=100)
+    p = tmp_path / "flags.json"
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def app(flags_file):
+    # 覆寫 conftest 的 app：這個檔案的測試（包含 login fixture）都用暫存的 flags.json
+    return create_app({"TESTING": True, "SECRET_KEY": "test-only", "APP_ENV": "development",
+                       "FLAGS_FILE": str(flags_file)})
 
 
 def _concrete(rule: str) -> str:
@@ -87,22 +113,35 @@ def test_admin_can_open_admin_pages(login, url):
     assert login("admin").get(url).status_code == 200
 
 
-def test_403_does_not_change_anything(app, login):
+def test_403_does_not_change_anything(app, login, flags_file):
     # 被擋下的請求不能有副作用：角色、flag 都維持原樣
     store = app.extensions["store"]
-    before_role = store.users["alice"].role
-    login("alice").post("/admin/users/alice/role", data={"role": "admin"})
-    login("betty").post("/admin/users/betty/role", data={"role": "admin"})
-    assert store.users["alice"].role == before_role
+    flags = app.extensions["flags"]
+    file_before = flags_file.read_bytes()
+    flags_before = flags.all()
+    assert flags_before["ai_quiz"].enabled   # 先確認 flag 是開的，kill 被放行的話才看得出差別
+
+    for uid in ("alice", "betty"):
+        u = login(uid)
+        assert u.post(f"/admin/users/{uid}/role", data={"role": "admin"}).status_code == 403
+        assert u.post("/admin/flags/kill-all").status_code == 403
+        assert u.post("/admin/flags/ai_quiz/kill").status_code == 403
+        assert u.post("/admin/flags/ai_quiz", data={"enabled": "false"}).status_code == 403
+
+    assert store.users["alice"].role == "student"
     assert store.users["betty"].role == "beta_tester"
+    assert flags_file.read_bytes() == file_before
+    assert flags.all() == flags_before
+    assert flags.audit == []
 
 
 # ---------- 3. 第一次登入的角色 ----------
 @pytest.fixture
-def gapp():
+def gapp(flags_file):
     return create_app({"TESTING": True, "SECRET_KEY": "test-only",
                        "GOOGLE_CLIENT_ID": "fake-id.apps.googleusercontent.com",
                        "GOOGLE_CLIENT_SECRET": "fake-secret",
+                       "FLAGS_FILE": str(flags_file),
                        "ADMIN_EMAILS": f" {ADMIN_EMAIL.upper()} , ta@mail.ntust.edu.tw,",
                        "BETA_TESTER_EMAILS": BETA_EMAIL,
                        })
