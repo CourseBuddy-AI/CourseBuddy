@@ -1,0 +1,36 @@
+# 依 README「程式結構」的負責人。PR 動到這些檔案時，GitHub 會自動邀請負責人 review。
+# main 的 ruleset 沒有勾「Require review from Code Owners」：這裡只負責自動通知，
+# 真正的 approve 照 A11 分工表的審查順序。後面的規則優先，所以越細的放越下面。
+
+# 預設：PM
+*                               @Juinn226
+
+# Developer A：App 骨架、登入、權限
+/app/__init__.py                @yishan2004931022-glitch
+/run.py                         @yishan2004931022-glitch
+/app/store.py                   @yishan2004931022-glitch
+/app/auth.py                    @yishan2004931022-glitch
+/app/google_auth.py             @yishan2004931022-glitch
+/app/routes.py                  @yishan2004931022-glitch
+/docs/security/                 @yishan2004931022-glitch
+/.env.example                   @yishan2004931022-glitch
+
+# PM：作答與兩個實驗功能
+/app/features.py                @Juinn226
+/app/quiz_engine.py             @Juinn226
+
+# Developer B：CI、依賴、上傳
+/.github/                       @a7654599
+/requirements*.txt              @a7654599
+/app/upload.py                  @a7654599
+
+# Operator / QA：flags、監控
+/flags.json                     @Cindy5180
+/app/flags.py                   @Cindy5180
+/app/metrics.py                 @Cindy5180
+/docs/ops/                      @Cindy5180
+
+# 畫面：陳儀珊、張
+/app/templates/                 @yishan2004931022-glitch @a0966568571-bot
+/app/static/                    @yishan2004931022-glitch @a0966568571-bot
+/docs/design/                   @a0966568571-bot
