@@ -243,3 +243,91 @@ def test_rejected_upload_is_not_stored(app, login):
     before = len(app.extensions["store"].materials)
     upload(login("alice"), b"MZ not a pdf")
     assert len(app.extensions["store"].materials) == before
+
+
+# ---------------- 每日上傳次數上限（林）----------------
+@pytest.fixture
+def qapp():
+    """上限設成 2 次，測試比較快；FEATURES_TODAY 固定日期，才能模擬換日。"""
+    from datetime import date
+    return create_app({"TESTING": True, "SECRET_KEY": "test-only", "APP_ENV": "development",
+                       "UPLOAD_DAILY_LIMIT": 2, "FEATURES_TODAY": date(2026, 11, 26)})
+
+
+def q_login(qapp, uid):
+    return As(qapp.test_client(), uid)
+
+
+def test_daily_limit_blocks_after_limit(qapp):
+    alice = q_login(qapp, "alice")
+    assert upload(alice, GOOD).status_code == 201
+    assert upload(alice, GOOD).status_code == 201
+    r = upload(alice, GOOD)
+    assert r.status_code == 429
+    body = r.get_json()
+    assert body["error"] == "daily_limit" and body["status"] == 429
+    assert "2 次" in body["message"]
+
+
+def test_daily_limit_blocked_upload_is_not_stored(qapp):
+    alice = q_login(qapp, "alice")
+    upload(alice, GOOD), upload(alice, GOOD)
+    before = len(qapp.extensions["store"].materials)
+    assert upload(alice, GOOD).status_code == 429
+    assert len(qapp.extensions["store"].materials) == before
+
+
+def test_daily_limit_checked_before_reading_file(qapp):
+    # 超過上限時連檔案都不看：就算傳的不是 PDF，也是回 429 而不是 415
+    alice = q_login(qapp, "alice")
+    upload(alice, GOOD), upload(alice, GOOD)
+    r = upload(alice, b"not a pdf", filename="x.txt")
+    assert r.status_code == 429
+
+
+def test_daily_limit_resets_next_day(qapp):
+    from datetime import date
+    alice = q_login(qapp, "alice")
+    upload(alice, GOOD), upload(alice, GOOD)
+    assert upload(alice, GOOD).status_code == 429
+    qapp.config["FEATURES_TODAY"] = date(2026, 11, 27)
+    assert upload(alice, GOOD).status_code == 201
+
+
+def test_daily_limit_is_per_user(qapp):
+    alice, bob = q_login(qapp, "alice"), q_login(qapp, "bob")
+    upload(alice, GOOD), upload(alice, GOOD)
+    assert upload(alice, GOOD).status_code == 429
+    assert upload(bob, GOOD).status_code == 201
+
+
+def test_rejected_uploads_do_not_use_quota(qapp):
+    alice = q_login(qapp, "alice")
+    assert upload(alice, b"not a pdf").status_code == 415
+    assert upload(alice, b"").status_code == 400
+    assert upload(alice, GOOD).status_code == 201
+    assert upload(alice, GOOD).status_code == 201
+
+
+def test_daily_limit_form_shows_message(qapp):
+    alice = q_login(qapp, "alice")
+    upload(alice, GOOD, url="/materials/upload"), upload(alice, GOOD, url="/materials/upload")
+    r = upload(alice, GOOD, url="/materials/upload")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/")
+    assert "今天的上傳次數已達上限" in alice.get("/").get_data(as_text=True)
+
+
+def test_today_uses_taipei_time(qapp, monkeypatch):
+    # UTC 11/26 17:00 = 台灣 11/27 01:00，應該算 11/27
+    from datetime import date, datetime, timezone
+    import app.upload as up
+
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 26, 17, 0, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(up, "datetime", FakeDT)
+    qapp.config["FEATURES_TODAY"] = None
+    with qapp.app_context():
+        assert up.today() == date(2026, 11, 27)
