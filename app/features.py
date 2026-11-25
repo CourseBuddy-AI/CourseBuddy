@@ -271,12 +271,15 @@ def reminder_card() -> dict | None:
 
 
 # ---------------- H1 / H2 實驗數據 ----------------
-def experiment_stats() -> dict:
-    """依作答當下的分組算 H1、H2 的成功指標（只算 beta_tester 的 on / off 兩組）。"""
+def experiment_stats(h1_window_days: int = 7) -> dict:
+    """依作答當下的分組算 H1、H2 的成功指標（只算 beta_tester 的 on / off 兩組）。
+
+    h1_window_days：H1 回訪要在答錯後幾天內才算（設計文件是 7 天；demo 前只看得到 3 天的先行指標）。
+    """
     out = {"h1_spaced_reminder": {}, "h2_ai_quiz": {}}
     attempts = fs().attempts
     for variant in ("on", "off"):
-        # H1：有答錯過的人裡，7 天內「改天回來」重做錯題的比例
+        # H1：有答錯過的人裡，N 天內「改天回來」重做錯題的比例
         wrong_first: dict[str, date] = {}
         came_back: set[str] = set()
         for a in attempts:
@@ -286,13 +289,13 @@ def experiment_stats() -> dict:
                 wrong_first[a.user_id] = a.on
         for a in attempts:
             start = wrong_first.get(a.user_id)
-            # 「回來」= 答錯之後的另一天（7 天內）重做了以前答錯的題
+            # 「回來」= 答錯之後的另一天（N 天內）重做了以前答錯的題
             if (start and a.spaced_reminder == variant
-                    and start < a.on <= start + timedelta(days=7) and _was_wrong_before(a)):
+                    and start < a.on <= start + timedelta(days=h1_window_days) and _was_wrong_before(a)):
                 came_back.add(a.user_id)
         n = len(wrong_first)
         out["h1_spaced_reminder"][variant] = {
-            "users_with_wrong": n, "came_back_in_7_days": len(came_back),
+            "users_with_wrong": n, f"came_back_in_{h1_window_days}_days": len(came_back),
             "rate": round(len(came_back) / n, 4) if n else None}
 
         # H2：第一次答錯的題，第二次作答答對的比例
@@ -506,6 +509,8 @@ def init_app(app) -> None:
     app.config.setdefault("LLM_DAILY_BUDGET_USD", 1.00)   # flags.py 也有同一個預設
     app.extensions["features"] = FeatureStore()
     app.register_blueprint(bp)
+    from . import analysis              # H1/H2 判定（#18），掛在 features 底下，不用改 __init__.py
+    analysis.init_app(app)
     app.jinja_env.globals.update(
         quizzes_for=lambda m: fs().quizzes_of(g.user.id, m.id) if g.get("user") else [],
         reminder_card=reminder_card,
