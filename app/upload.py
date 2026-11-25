@@ -10,6 +10,11 @@
   5. pypdf 解析得了、沒加密、頁數不超過 UPLOAD_MAX_PAGES（先數頁數，才逐頁擷取文字）
   6. 擷取得到文字（掃描檔沒有文字，AI 出題用不了）
 
+每人每天最多上傳 UPLOAD_DAILY_LIMIT 次（超過回 429 daily_limit）：
+  - 在讀檔「之前」檢查，超過上限的請求不會花時間解析 PDF
+  - 只有成功存進 store 的上傳才算一次；被擋下的檔案（太大、不是 PDF…）不扣次數
+  - 「一天」以台灣時間（Asia/Taipei）換日；測試可用 FEATURES_TODAY 模擬換日（與出題上限共用）
+
 PDF 檔本身不落地，只把每頁文字存進 store；所以沒有存檔路徑可以被 path traversal。
 擷取出來的文字之後會交給 LLM，一樣是不可信的資料，Prompt 要把它當資料、不是指令。
 """
@@ -17,6 +22,9 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from flask import (Blueprint, current_app, flash, g, jsonify, redirect, request,
                    url_for)
@@ -29,7 +37,9 @@ DEFAULTS = {
     "UPLOAD_MAX_BYTES": 10 * 1024 * 1024,  # 單檔 10 MB
     "UPLOAD_MAX_PAGES": 50,                # 一份講義最多 50 頁
     "UPLOAD_MAX_CHARS_PER_PAGE": 5000,     # 每頁文字上限，限制之後送進 LLM 的長度
+    "UPLOAD_DAILY_LIMIT": 10,              # 每人每天最多上傳幾次（防濫用、控制儲存與之後的 LLM 成本）
 }
+TAIPEI = ZoneInfo("Asia/Taipei")
 FORM_OVERHEAD = 64 * 1024                  # multipart 邊界與其他欄位（csrf、title）的空間
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -42,6 +52,22 @@ class UploadError(Exception):
         self.status = status
         self.reason = reason      # 給 log 和 API 用的短代碼
         self.message = message    # 給使用者看的中文訊息
+
+
+# ---------------- 每日上傳次數 ----------------
+def today() -> date:
+    """台灣時間的今天。測試用 FEATURES_TODAY 模擬換日（和 features.py 的出題上限用同一個設定）。"""
+    return current_app.config.get("FEATURES_TODAY") or datetime.now(TAIPEI).date()
+
+
+def _quota() -> Counter:
+    return current_app.extensions["upload_quota"]      # (user_id, date) -> 今天成功上傳幾次
+
+
+def check_quota(user_id: str) -> None:
+    limit = current_app.config["UPLOAD_DAILY_LIMIT"]
+    if _quota()[(user_id, today())] >= limit:
+        raise UploadError(429, "daily_limit", f"今天的上傳次數已達上限（{limit} 次），明天再來")
 
 
 # ---------------- 檢查 ----------------
@@ -105,10 +131,12 @@ def extract_pages(data: bytes) -> list[str]:
 
 def handle_upload():
     """兩個路由共用：檢查、擷取文字、存進 store，回傳新的 Material。"""
+    check_quota(g.user.id)                     # 最便宜的檢查放最前面：超過上限就不讀檔
     filename, data = read_upload(request.files.get("file"))
     pages = extract_pages(data)
     title = _CONTROL.sub("", request.form.get("title", "")).strip()[:100] or filename[:-4] or "未命名講義"
     m = current_app.extensions["store"].add_material(title, g.user.id, pages, filename)
+    _quota()[(g.user.id, today())] += 1        # 存成功才算一次
     current_app.logger.info("upload ok uid=%s material=%s bytes=%d pages=%d",
                             g.user.id, m.id, len(data), len(pages))
     return m
@@ -162,5 +190,6 @@ def init_app(app) -> None:
     # Flask 預設 MAX_CONTENT_LENGTH 是 None（不限制），所以不能用 setdefault
     if app.config.get("MAX_CONTENT_LENGTH") is None:
         app.config["MAX_CONTENT_LENGTH"] = app.config["UPLOAD_MAX_BYTES"] + FORM_OVERHEAD
+    app.extensions["upload_quota"] = Counter()
     app.register_blueprint(bp)
     app.register_error_handler(413, _request_too_large)
