@@ -331,3 +331,58 @@ def test_today_uses_taipei_time(qapp, monkeypatch):
     qapp.config["FEATURES_TODAY"] = None
     with qapp.app_context():
         assert up.today() == date(2026, 11, 27)
+
+
+# ---------------- review 後補的：同時上傳、退回、換日清除 ----------------
+def test_concurrent_reserve_never_exceeds_limit():
+    # 50 個 thread 同時搶 10 次額度：檢查＋預扣在同一個 lock 裡，成功的剛好 10 個
+    import threading
+    from datetime import date
+    from app.upload import UploadQuota
+
+    q, day, ok = UploadQuota(), date(2026, 11, 26), []
+    start = threading.Barrier(50)
+
+    def worker():
+        start.wait()
+        ok.append(q.reserve("alice", day, 10))
+
+    threads = [threading.Thread(target=worker) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert ok.count(True) == 10 and q.used("alice", day) == 10
+
+
+def test_failed_upload_releases_reserved_quota(qapp):
+    alice = q_login(qapp, "alice")
+    assert upload(alice, b"not a pdf").status_code == 415
+    from datetime import date
+    assert qapp.extensions["upload_quota"].used("alice", date(2026, 11, 26)) == 0
+
+
+def test_unexpected_error_also_releases_quota(qapp, monkeypatch):
+    # 不是 UploadError 的例外（例如 store 壞掉）也要退回，不然那次額度就白白被吃掉
+    import app.upload as up
+    from datetime import date
+
+    def boom(*a, **kw):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(qapp.extensions["store"], "add_material", boom)
+    alice = q_login(qapp, "alice")
+    with pytest.raises(RuntimeError):
+        upload(alice, GOOD)
+    assert qapp.extensions["upload_quota"].used("alice", date(2026, 11, 26)) == 0
+
+
+def test_old_days_are_pruned():
+    from datetime import date
+    from app.upload import UploadQuota
+
+    q = UploadQuota()
+    q.reserve("alice", date(2026, 11, 26), 10)
+    q.reserve("bob", date(2026, 11, 26), 10)
+    q.reserve("alice", date(2026, 11, 27), 10)
+    assert q._day == date(2026, 11, 27) and q._used == {"alice": 1}
