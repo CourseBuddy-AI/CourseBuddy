@@ -10,6 +10,16 @@
   5. pypdf 解析得了、沒加密、頁數不超過 UPLOAD_MAX_PAGES（先數頁數，才逐頁擷取文字）
   6. 擷取得到文字（掃描檔沒有文字，AI 出題用不了）
 
+每人每天最多上傳 UPLOAD_DAILY_LIMIT 次（超過回 429 daily_limit）：
+  - 在讀檔「之前」先預扣 1 次（檢查＋預扣在同一個 lock 裡），同時送出的請求不會一起穿過上限
+  - 上傳失敗（太大、不是 PDF…）會把預扣的次數退回，所以只有成功存進 store 的才算
+  - 「一天」以台灣時間（Asia/Taipei）換日；測試可用 FEATURES_TODAY 模擬換日（與出題上限共用）
+  - 換日後第一次預扣時，會把前幾天的紀錄清掉
+限制：計數和 store 一樣放在記憶體，只在單一 process 內有效。
+  - 重啟後次數歸零（講義本身也會一起消失，所以不會變成「可以多傳」以外的問題）
+  - 開多個 worker（gunicorn -w N）時每個 worker 各算各的，上限會變成 N 倍；
+    不過 store 也是每個 worker 各一份，多 worker 本來就不能用。之後 store 換成資料庫時，計數一起搬過去
+
 PDF 檔本身不落地，只把每頁文字存進 store；所以沒有存檔路徑可以被 path traversal。
 擷取出來的文字之後會交給 LLM，一樣是不可信的資料，Prompt 要把它當資料、不是指令。
 """
@@ -17,6 +27,9 @@ from __future__ import annotations
 
 import io
 import re
+import threading
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from flask import (Blueprint, current_app, flash, g, jsonify, redirect, request,
                    url_for)
@@ -29,7 +42,9 @@ DEFAULTS = {
     "UPLOAD_MAX_BYTES": 10 * 1024 * 1024,  # 單檔 10 MB
     "UPLOAD_MAX_PAGES": 50,                # 一份講義最多 50 頁
     "UPLOAD_MAX_CHARS_PER_PAGE": 5000,     # 每頁文字上限，限制之後送進 LLM 的長度
+    "UPLOAD_DAILY_LIMIT": 10,              # 每人每天最多上傳幾次（防濫用、控制儲存與之後的 LLM 成本）
 }
+TAIPEI = ZoneInfo("Asia/Taipei")
 FORM_OVERHEAD = 64 * 1024                  # multipart 邊界與其他欄位（csrf、title）的空間
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -42,6 +57,54 @@ class UploadError(Exception):
         self.status = status
         self.reason = reason      # 給 log 和 API 用的短代碼
         self.message = message    # 給使用者看的中文訊息
+
+
+# ---------------- 每日上傳次數 ----------------
+def today() -> date:
+    """台灣時間的今天。測試用 FEATURES_TODAY 模擬換日（和 features.py 的出題上限用同一個設定）。"""
+    return current_app.config.get("FEATURES_TODAY") or datetime.now(TAIPEI).date()
+
+
+class UploadQuota:
+    """每人每天的上傳次數。reserve（檢查＋預扣）與 release（退回）都在 lock 裡，不會被別的請求插隊。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._day: date | None = None
+        self._used: dict[str, int] = {}               # user_id -> 今天已用（含預扣中）的次數
+
+    def _roll(self, day: date) -> None:
+        if day != self._day:                          # 換日：前幾天的紀錄直接丟掉
+            self._day, self._used = day, {}
+
+    def reserve(self, user_id: str, day: date, limit: int) -> bool:
+        with self._lock:
+            self._roll(day)
+            if self._used.get(user_id, 0) >= limit:
+                return False
+            self._used[user_id] = self._used.get(user_id, 0) + 1
+            return True
+
+    def release(self, user_id: str, day: date) -> None:
+        with self._lock:
+            if day == self._day and self._used.get(user_id, 0) > 0:
+                self._used[user_id] -= 1
+
+    def used(self, user_id: str, day: date) -> int:
+        with self._lock:
+            return self._used.get(user_id, 0) if day == self._day else 0
+
+
+def _quota() -> UploadQuota:
+    return current_app.extensions["upload_quota"]
+
+
+def reserve_quota(user_id: str) -> date:
+    """預扣 1 次，回傳算在哪一天（失敗退回時要退到同一天，不會因為剛好跨午夜退錯天）。"""
+    limit, day = current_app.config["UPLOAD_DAILY_LIMIT"], today()
+    if not _quota().reserve(user_id, day, limit):
+        raise UploadError(429, "daily_limit", f"今天的上傳次數已達上限（{limit} 次），明天再來")
+    return day
 
 
 # ---------------- 檢查 ----------------
@@ -105,10 +168,15 @@ def extract_pages(data: bytes) -> list[str]:
 
 def handle_upload():
     """兩個路由共用：檢查、擷取文字、存進 store，回傳新的 Material。"""
-    filename, data = read_upload(request.files.get("file"))
-    pages = extract_pages(data)
-    title = _CONTROL.sub("", request.form.get("title", "")).strip()[:100] or filename[:-4] or "未命名講義"
-    m = current_app.extensions["store"].add_material(title, g.user.id, pages, filename)
+    day = reserve_quota(g.user.id)             # 最便宜的檢查放最前面：超過上限就不讀檔
+    try:
+        filename, data = read_upload(request.files.get("file"))
+        pages = extract_pages(data)
+        title = _CONTROL.sub("", request.form.get("title", "")).strip()[:100] or filename[:-4] or "未命名講義"
+        m = current_app.extensions["store"].add_material(title, g.user.id, pages, filename)
+    except BaseException:
+        _quota().release(g.user.id, day)       # 沒存成功：退回預扣的次數
+        raise
     current_app.logger.info("upload ok uid=%s material=%s bytes=%d pages=%d",
                             g.user.id, m.id, len(data), len(pages))
     return m
@@ -162,5 +230,6 @@ def init_app(app) -> None:
     # Flask 預設 MAX_CONTENT_LENGTH 是 None（不限制），所以不能用 setdefault
     if app.config.get("MAX_CONTENT_LENGTH") is None:
         app.config["MAX_CONTENT_LENGTH"] = app.config["UPLOAD_MAX_BYTES"] + FORM_OVERHEAD
+    app.extensions["upload_quota"] = UploadQuota()
     app.register_blueprint(bp)
     app.register_error_handler(413, _request_too_large)
